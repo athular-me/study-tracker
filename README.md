@@ -16,9 +16,10 @@ A simple study tracker with a Tkinter GUI and Excel logging (via `openpyxl`).
 
 ### Option 1: Run with Python
 1. Clone this repo:
-   ```bash
+```bash
    git clone https://github.com/athular-me/study-tracker.git
-   cd study-tracker ```
+   cd study-tracker 
+```
 2.Install dependencies:
 ```bash
     pip install -r requirements.txt

@@ -3,6 +3,8 @@ from tkinter import simpledialog, messagebox, ttk
 from datetime import datetime, timedelta
 from openpyxl import Workbook, load_workbook
 import os
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 file_name = "study_log.xlsx"
 
@@ -15,7 +17,7 @@ if not os.path.exists(file_name):
     ws1.title = "Logs"
     ws1.append(["Date", "Start Time", "End Time", "Activity", "Duration"])
 
-    # Summary (by day)
+    # Summary
     ws2 = wb.create_sheet("Summary")
     ws2.append(["Date", "Total Study Time (HH:MM:SS)", "Change vs Previous Day"])
 
@@ -32,17 +34,6 @@ if not os.path.exists(file_name):
 wb = load_workbook(file_name)
 logs_ws = wb["Logs"]
 summary_ws = wb["Summary"]
-
-# Create missing sheets if user had an older file
-if "DailyTarget" not in wb.sheetnames:
-    ws_d = wb.create_sheet("DailyTarget")
-    ws_d.append(["Date", "Target Hours", "Earned Hours", "Progress %"])
-    wb.save(file_name)
-if "WeeklyTarget" not in wb.sheetnames:
-    ws_w = wb.create_sheet("WeeklyTarget")
-    ws_w.append(["Week Start", "Target Hours", "Earned Hours", "Progress %"])
-    wb.save(file_name)
-
 daily_ws = wb["DailyTarget"]
 weekly_ws = wb["WeeklyTarget"]
 
@@ -50,57 +41,42 @@ start_time = None
 
 # ---------------- Helpers ----------------
 def to_td(timestr):
-    """Convert 'HH:MM:SS' -> timedelta"""
     if not timestr:
         return timedelta()
-    parts = str(timestr).split(":")
-    if len(parts) == 3:
-        h, m, s = parts
-        # s might be float-like; we take int of floor seconds
-        return timedelta(hours=int(h), minutes=int(m), seconds=int(float(s)))
-    return timedelta()
+    h, m, s = str(timestr).split(":")
+    return timedelta(hours=int(h), minutes=int(m), seconds=int(float(s)))
 
 def get_week_start(date_obj):
-    """Return Monday date for the given date (as date)"""
     return (date_obj - timedelta(days=date_obj.weekday())).date()
 
 def add_or_update_target(ws, key, target_hours):
-    """Ensure a row exists for key (date or week_start) and set target."""
-    found = False
     for i, row in enumerate(ws.iter_rows(min_row=2, values_only=False), start=2):
         if row[0].value == key:
             ws.cell(i, 2).value = target_hours
-            # Keep earned & % as is
-            found = True
-            break
-    if not found:
-        row_num = ws.max_row + 1
-        ws.cell(row_num, 1).value = key
-        ws.cell(row_num, 2).value = target_hours
-        ws.cell(row_num, 3).value = 0
-        ws.cell(row_num, 4).value = "0%"
+            return
+    row_num = ws.max_row + 1
+    ws.cell(row_num, 1).value = key
+    ws.cell(row_num, 2).value = target_hours
+    ws.cell(row_num, 3).value = 0
+    ws.cell(row_num, 4).value = "0%"
 
 def add_time(ws, key, duration_hours):
-    """Increase earned hours for key and recompute % based on target."""
-    found = False
     for i, row in enumerate(ws.iter_rows(min_row=2, values_only=False), start=2):
         if row[0].value == key:
-            prev_earned = row[2].value or 0
+            prev = row[2].value or 0
             target = row[1].value or 0
-            new_earned = (prev_earned or 0) + duration_hours
-            percent = min(100, round((new_earned / target) * 100, 1)) if target else 0
-            ws.cell(i, 3).value = round(new_earned, 2)
+            new_val = prev + duration_hours
+            percent = min(100, round((new_val / target) * 100, 1)) if target else 0
+            ws.cell(i, 3).value = round(new_val, 2)
             ws.cell(i, 4).value = f"{percent}%"
-            found = True
-            break
-    if not found:
-        row_num = ws.max_row + 1
-        ws.cell(row_num, 1).value = key
-        ws.cell(row_num, 2).value = 0
-        ws.cell(row_num, 3).value = round(duration_hours, 2)
-        ws.cell(row_num, 4).value = "0%"
+            return
+    row_num = ws.max_row + 1
+    ws.cell(row_num, 1).value = key
+    ws.cell(row_num, 2).value = 0
+    ws.cell(row_num, 3).value = duration_hours
+    ws.cell(row_num, 4).value = "0%"
 
-# ---------------- Session Controls ----------------
+# ---------------- Session ----------------
 def start_session():
     global start_time
     start_time = datetime.now()
@@ -116,214 +92,135 @@ def stop_session():
     duration = end_time - start_time
     today_str = str(datetime.today().date())
 
-    # Ask optional activity
-    activity = simpledialog.askstring("Activity", "What did you study? (Optional)")
-    if activity is None:
-        activity = ""
+    activity = simpledialog.askstring("Activity", "What did you study? (Optional)") or ""
 
-    # Save to Logs sheet
-    logs_ws.append([
-        today_str,
-        start_time.strftime("%H:%M:%S"),
-        end_time.strftime("%H:%M:%S"),
-        activity,
-        str(duration).split(".")[0]
-    ])
+    logs_ws.append([today_str,
+                    start_time.strftime("%H:%M:%S"),
+                    end_time.strftime("%H:%M:%S"),
+                    activity,
+                    str(duration).split(".")[0]])
 
-    # --- Update Summary (per day) ---
+    # Summary
     found = False
     for i, row in enumerate(summary_ws.iter_rows(min_row=2, values_only=False), start=2):
         if row[0].value == today_str:
-            old_total = row[1].value or "0:00:00"
-            old_td = to_td(old_total)
+            old_td = to_td(row[1].value)
             new_total = old_td + duration
-            summary_ws.cell(i, 1).value = today_str
             summary_ws.cell(i, 2).value = str(new_total).split(".")[0]
-
-            # comparison with previous day
-            if i > 2:
-                prev_td = to_td(summary_ws.cell(i - 1, 2).value)
-                diff = new_total - prev_td
-                sign = '+' if diff.total_seconds() >= 0 else '-'
-                summary_ws.cell(i, 3).value = f"{sign}{str(abs(diff)).split('.')[0]}"
             found = True
             break
-
     if not found:
-        new_total = duration
-        row_num = summary_ws.max_row + 1
-        summary_ws.cell(row_num, 1).value = today_str
-        summary_ws.cell(row_num, 2).value = str(new_total).split(".")[0]
-        if row_num > 2:
-            prev_td = to_td(summary_ws.cell(row_num - 1, 2).value)
-            diff = new_total - prev_td
-            sign = '+' if diff.total_seconds() >= 0 else '-'
-            summary_ws.cell(row_num, 3).value = f"{sign}{str(abs(diff)).split('.')[0]}"
+        summary_ws.append([today_str, str(duration).split(".")[0], ""])
 
-    # --- Update Daily Target ---
-    hours = duration.total_seconds() / 3600.0
+    # Targets
+    hours = duration.total_seconds() / 3600
     add_time(daily_ws, today_str, hours)
-
-    # --- Update Weekly Target ---
-    week_start = str(get_week_start(datetime.today()))
-    add_time(weekly_ws, week_start, hours)
+    add_time(weekly_ws, str(get_week_start(datetime.today())), hours)
 
     wb.save(file_name)
-
-    status_label.config(text=f"Session saved! Duration: {str(duration).split('.')[0]}")
+    status_label.config(text=f"Saved! Duration: {str(duration).split('.')[0]}")
     start_time = None
 
-    # Auto refresh summary window if open
-    if summary_win and summary_win.winfo_exists():
-        refresh_summary()
-    # Refresh in-app dashboards
-    refresh_targets()
+# ---------------- Dashboard ----------------
+def open_dashboard():
+    dash = tk.Toplevel(root)
+    dash.title("Dashboard")
+    dash.geometry("600x500")
 
-# ---------------- Summary (table window) ----------------
-def refresh_summary():
-    """Refresh table contents"""
-    for row in tree.get_children():
-        tree.delete(row)
+    notebook = ttk.Notebook(dash)
+    notebook.pack(expand=True, fill="both")
+
+    # Summary Tab
+    frame_summary = tk.Frame(notebook)
+    notebook.add(frame_summary, text="Summary")
+    tree = ttk.Treeview(frame_summary, columns=("Date","Total","Change"), show="headings")
+    for c in ("Date","Total","Change"):
+        tree.heading(c, text=c)
+    tree.pack(expand=True, fill="both")
     for row in summary_ws.iter_rows(min_row=2, values_only=True):
         tree.insert("", "end", values=row)
 
-def view_summary():
-    global summary_win, tree
-    summary_win = tk.Toplevel(root)
-    summary_win.title("Study Summary")
-    summary_win.geometry("500x260")
+    # Daily Target Tab
+    frame_daily = tk.Frame(notebook)
+    notebook.add(frame_daily, text="Daily Target")
+    tk.Button(frame_daily, text="Set Daily Target", command=set_daily_target).pack(pady=5)
+    refresh_target_ui(frame_daily, daily_ws, str(datetime.today().date()))
 
-    tree = ttk.Treeview(summary_win, columns=("Date", "Total", "Change"), show="headings")
-    tree.heading("Date", text="Date")
-    tree.heading("Total", text="Total Study Time")
-    tree.heading("Change", text="Vs Previous Day")
+    # Weekly Target Tab
+    frame_weekly = tk.Frame(notebook)
+    notebook.add(frame_weekly, text="Weekly Target")
+    tk.Button(frame_weekly, text="Set Weekly Target", command=set_weekly_target).pack(pady=5)
+    refresh_target_ui(frame_weekly, weekly_ws, str(get_week_start(datetime.today())))
 
-    tree.column("Date", width=120, anchor="center")
-    tree.column("Total", width=160, anchor="center")
-    tree.column("Change", width=160, anchor="center")
+    # Visualization Tab
+    frame_vis = tk.Frame(notebook)
+    notebook.add(frame_vis, text="Visualization")
+    plot_summary(frame_vis)
 
-    tree.pack(expand=True, fill="both")
-    refresh_summary()
-
-# ---------------- Targets UI + Logic ----------------
 def set_daily_target():
-    target = simpledialog.askinteger("Daily Target", "Enter target hours for today:")
-    if not target:
-        return
-    today_str = str(datetime.today().date())
-    add_or_update_target(daily_ws, today_str, target)
-    wb.save(file_name)
-    refresh_targets()
+    t = simpledialog.askinteger("Daily Target", "Enter target hours today:")
+    if t:
+        add_or_update_target(daily_ws, str(datetime.today().date()), t)
+        wb.save(file_name)
 
 def set_weekly_target():
-    target = simpledialog.askinteger("Weekly Target", "Enter target hours for this week:")
-    if not target:
+    t = simpledialog.askinteger("Weekly Target", "Enter target hours this week:")
+    if t:
+        add_or_update_target(weekly_ws, str(get_week_start(datetime.today())), t)
+        wb.save(file_name)
+
+def refresh_target_ui(parent, ws, key):
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if str(row[0]) == str(key):
+            tk.Label(parent, text=f"Target: {row[1]} hrs").pack()
+            tk.Label(parent, text=f"Earned: {row[2]} hrs").pack()
+            pct = float(str(row[3]).strip('%')) if row[3] else 0
+            bar = ttk.Progressbar(parent, length=400, mode="determinate", maximum=100)
+            bar["value"] = pct
+            bar.pack(pady=5)
+            tk.Label(parent, text=f"{pct}%").pack()
+            return
+    tk.Label(parent, text="No target set yet.").pack()
+
+def plot_summary(parent):
+    dates, totals = [], []
+    for row in summary_ws.iter_rows(min_row=2, values_only=True):
+        if row[0] and row[1]:
+            dates.append(row[0])
+            h,m,s = map(int,str(row[1]).split(":"))
+            totals.append(h + m/60 + s/3600)
+
+    if not dates: 
+        tk.Label(parent, text="No data yet").pack()
         return
-    week_start = str(get_week_start(datetime.today()))
-    add_or_update_target(weekly_ws, week_start, target)
-    wb.save(file_name)
-    refresh_targets()
 
-def refresh_targets():
-    """Update the in-app dashboard for daily & weekly targets."""
-    today_str = str(datetime.today().date())
-    week_start = str(get_week_start(datetime.today()))
+    fig = Figure(figsize=(5,3))
+    ax = fig.add_subplot(111)
+    ax.plot(dates, totals, marker="o")
+    ax.set_title("Daily Study Hours")
+    ax.set_ylabel("Hours")
+    ax.set_xlabel("Date")
+    ax.tick_params(axis='x', rotation=45)
 
-    # ----- Daily -----
-    d_target, d_earned, d_percent = 0, 0, 0
-    for row in daily_ws.iter_rows(min_row=2, values_only=True):
-        if row[0] == today_str:
-            d_target = row[1] or 0
-            d_earned = row[2] or 0
-            d_percent = min(100, round((d_earned / d_target) * 100, 1)) if d_target else 0
-            break
-
-    daily_date.config(text=f"Date: {today_str}")
-    daily_target_label.config(text=f"Target: {d_target} hrs")
-    daily_earned_label.config(text=f"Earned: {d_earned:.2f} hrs")
-    daily_bar["value"] = d_percent
-    daily_pct_label.config(text=f"{d_percent:.1f}%")
-
-    # ----- Weekly -----
-    w_target, w_earned, w_percent = 0, 0, 0
-    for row in weekly_ws.iter_rows(min_row=2, values_only=True):
-        if row[0] == week_start:
-            w_target = row[1] or 0
-            w_earned = row[2] or 0
-            w_percent = min(100, round((w_earned / w_target) * 100, 1)) if w_target else 0
-            break
-
-    weekly_date.config(text=f"Week Start: {week_start}")
-    weekly_target_label.config(text=f"Target: {w_target} hrs")
-    weekly_earned_label.config(text=f"Earned: {w_earned:.2f} hrs")
-    weekly_bar["value"] = w_percent
-    weekly_pct_label.config(text=f"{w_percent:.1f}%")
+    canvas = FigureCanvasTkAgg(fig, master=parent)
+    canvas.draw()
+    canvas.get_tk_widget().pack(expand=True, fill="both")
 
 # ---------------- GUI ----------------
 root = tk.Tk()
 root.title("Study Tracker")
-root.geometry("420x640")
+root.geometry("250x200")
 
-# Controls
-start_btn = tk.Button(root, text="Start", command=start_session,
-                      bg="green", fg="white", width=18, height=2)
-start_btn.pack(pady=8)
+start_btn = tk.Button(root, text="Start", command=start_session, bg="green", fg="white", width=15, height=2)
+start_btn.pack(pady=10)
 
-stop_btn = tk.Button(root, text="Stop", command=stop_session,
-                     bg="red", fg="white", width=18, height=2)
-stop_btn.pack(pady=8)
+stop_btn = tk.Button(root, text="Stop", command=stop_session, bg="red", fg="white", width=15, height=2)
+stop_btn.pack(pady=10)
 
-summary_btn = tk.Button(root, text="View Summary", command=view_summary,
-                        bg="blue", fg="white", width=18, height=2)
-summary_btn.pack(pady=8)
-
-daily_btn = tk.Button(root, text="Set Daily Target", command=set_daily_target,
-                      bg="purple", fg="white", width=18, height=2)
-daily_btn.pack(pady=6)
-
-weekly_btn = tk.Button(root, text="Set Weekly Target", command=set_weekly_target,
-                       bg="orange", fg="white", width=18, height=2)
-weekly_btn.pack(pady=6)
+dash_btn = tk.Button(root, text="Dashboard", command=open_dashboard, bg="blue", fg="white", width=15, height=2)
+dash_btn.pack(pady=10)
 
 status_label = tk.Label(root, text="Click Start to begin", fg="blue")
-status_label.pack(pady=8)
-
-# ---- Daily Progress Frame ----
-daily_frame = tk.LabelFrame(root, text="Daily Progress", padx=8, pady=8)
-daily_frame.pack(fill="x", padx=10, pady=6)
-
-daily_date = tk.Label(daily_frame, text="Date: -")
-daily_date.pack(anchor="w")
-daily_target_label = tk.Label(daily_frame, text="Target: -")
-daily_target_label.pack(anchor="w")
-daily_earned_label = tk.Label(daily_frame, text="Earned: -")
-daily_earned_label.pack(anchor="w")
-
-daily_bar = ttk.Progressbar(daily_frame, orient="horizontal", length=360, mode="determinate", maximum=100)
-daily_bar.pack(pady=6)
-daily_pct_label = tk.Label(daily_frame, text="0.0%")
-daily_pct_label.pack()
-
-# ---- Weekly Progress Frame ----
-weekly_frame = tk.LabelFrame(root, text="Weekly Progress", padx=8, pady=8)
-weekly_frame.pack(fill="x", padx=10, pady=6)
-
-weekly_date = tk.Label(weekly_frame, text="Week Start: -")
-weekly_date.pack(anchor="w")
-weekly_target_label = tk.Label(weekly_frame, text="Target: -")
-weekly_target_label.pack(anchor="w")
-weekly_earned_label = tk.Label(weekly_frame, text="Earned: -")
-weekly_earned_label.pack(anchor="w")
-
-weekly_bar = ttk.Progressbar(weekly_frame, orient="horizontal", length=360, mode="determinate", maximum=100)
-weekly_bar.pack(pady=6)
-weekly_pct_label = tk.Label(weekly_frame, text="0.0%")
-weekly_pct_label.pack()
-
-summary_win = None
-tree = None
-
-# Initialize dashboards
-refresh_targets()
+status_label.pack(pady=10)
 
 root.mainloop()

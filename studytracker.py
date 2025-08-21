@@ -32,10 +32,12 @@ if not os.path.exists(file_name):
     wb.save(file_name)
 
 wb = load_workbook(file_name)
-logs_ws = wb["Logs"]
-summary_ws = wb["Summary"]
-daily_ws = wb["DailyTarget"]
-weekly_ws = wb["WeeklyTarget"]
+
+# Ensure sheets exist
+logs_ws = wb["Logs"] if "Logs" in wb.sheetnames else wb.create_sheet("Logs")
+summary_ws = wb["Summary"] if "Summary" in wb.sheetnames else wb.create_sheet("Summary")
+daily_ws = wb["DailyTarget"] if "DailyTarget" in wb.sheetnames else wb.create_sheet("DailyTarget")
+weekly_ws = wb["WeeklyTarget"] if "WeeklyTarget" in wb.sheetnames else wb.create_sheet("WeeklyTarget")
 
 start_time = None
 
@@ -76,6 +78,33 @@ def add_time(ws, key, duration_hours):
     ws.cell(row_num, 3).value = duration_hours
     ws.cell(row_num, 4).value = "0%"
 
+def update_daily_summary(today_str):
+    total_duration = timedelta()
+    # sum all sessions for today
+    for row in logs_ws.iter_rows(min_row=2, values_only=True):
+        if row[0] == today_str:
+            total_duration += to_td(row[4])
+    # update or append
+    found = False
+    for i, row in enumerate(summary_ws.iter_rows(min_row=2, values_only=False), start=2):
+        if row[0].value == today_str:
+            summary_ws.cell(i, 2).value = str(total_duration).split(".")[0]
+            found = True
+            row_num = i
+            break
+    if not found:
+        summary_ws.append([today_str, str(total_duration).split(".")[0], ""])
+        row_num = summary_ws.max_row
+
+    # Update Change vs Previous Day
+    if row_num > 2:
+        today_td = to_td(summary_ws.cell(row_num, 2).value)
+        prev_td = to_td(summary_ws.cell(row_num-1, 2).value)
+        diff = today_td - prev_td
+        summary_ws.cell(row_num, 3).value = f"{'+' if diff.total_seconds()>=0 else '-'}{str(abs(diff)).split('.')[0]}"
+    else:
+        summary_ws.cell(row_num, 3).value = ""
+
 # ---------------- Session ----------------
 def start_session():
     global start_time
@@ -100,17 +129,8 @@ def stop_session():
                     activity,
                     str(duration).split(".")[0]])
 
-    # Summary
-    found = False
-    for i, row in enumerate(summary_ws.iter_rows(min_row=2, values_only=False), start=2):
-        if row[0].value == today_str:
-            old_td = to_td(row[1].value)
-            new_total = old_td + duration
-            summary_ws.cell(i, 2).value = str(new_total).split(".")[0]
-            found = True
-            break
-    if not found:
-        summary_ws.append([today_str, str(duration).split(".")[0], ""])
+    # Update daily summary with all sessions summed
+    update_daily_summary(today_str)
 
     # Targets
     hours = duration.total_seconds() / 3600
